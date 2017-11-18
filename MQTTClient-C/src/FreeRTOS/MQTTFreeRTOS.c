@@ -17,6 +17,12 @@
 
 #include "MQTTFreeRTOS.h"
 
+#include <string.h>
+
+#include "lwipopts.h"
+#include "lwip.h"
+#include "sockets.h"
+#include "netdb.h"
 
 int ThreadStart(Thread* thread, void (*fn)(void*), void* arg)
 {
@@ -94,12 +100,16 @@ int FreeRTOS_read(Network* n, unsigned char* buffer, int len, int timeout_ms)
 	do
 	{
 		int rc = 0;
+		struct timeval tv;
 
-		FreeRTOS_setsockopt(n->my_socket, 0, FREERTOS_SO_RCVTIMEO, &xTicksToWait, sizeof(xTicksToWait));
-		rc = FreeRTOS_recv(n->my_socket, buffer + recvLen, len - recvLen, 0);
+		tv.tv_sec = timeout_ms / 1000;
+		tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+		rc = setsockopt(n->my_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		rc = recv(n->my_socket, buffer + recvLen, len - recvLen, 0);
 		if (rc > 0)
 			recvLen += rc;
-		else if (rc < 0)
+		else if ( (rc < 0) && (errno != EAGAIN) )
 		{
 			recvLen = rc;
 			break;
@@ -120,9 +130,13 @@ int FreeRTOS_write(Network* n, unsigned char* buffer, int len, int timeout_ms)
 	do
 	{
 		int rc = 0;
+		struct timeval tv;
 
-		FreeRTOS_setsockopt(n->my_socket, 0, FREERTOS_SO_RCVTIMEO, &xTicksToWait, sizeof(xTicksToWait));
-		rc = FreeRTOS_send(n->my_socket, buffer + sentLen, len - sentLen, 0);
+		tv.tv_sec = timeout_ms / 1000;
+		tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+		rc = setsockopt(n->my_socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+		rc = send(n->my_socket, buffer + sentLen, len - sentLen, 0);
 		if (rc > 0)
 			sentLen += rc;
 		else if (rc < 0)
@@ -138,7 +152,7 @@ int FreeRTOS_write(Network* n, unsigned char* buffer, int len, int timeout_ms)
 
 void FreeRTOS_disconnect(Network* n)
 {
-	FreeRTOS_closesocket(n->my_socket);
+	closesocket(n->my_socket);
 }
 
 
@@ -151,31 +165,61 @@ void NetworkInit(Network* n)
 }
 
 
-int NetworkConnect(Network* n, char* addr, int port)
+static int host2addr(const char *hostname , struct in_addr *in)
 {
-	struct freertos_sockaddr sAddr;
-	int retVal = -1;
-	uint32_t ipAddress;
+    struct addrinfo hints, *servinfo, *p;
+    struct sockaddr_in *h;
+    int rv;
 
-	if ((ipAddress = FreeRTOS_gethostbyname(addr)) == 0)
-		goto exit;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    rv = getaddrinfo(hostname, 0 , &hints , &servinfo);
+    if (rv != 0)
+    {
+        return rv;
+    }
 
-	sAddr.sin_port = FreeRTOS_htons(port);
-	sAddr.sin_addr = ipAddress;
-
-	if ((n->my_socket = FreeRTOS_socket(FREERTOS_AF_INET, FREERTOS_SOCK_STREAM, FREERTOS_IPPROTO_TCP)) < 0)
-		goto exit;
-
-	if ((retVal = FreeRTOS_connect(n->my_socket, &sAddr, sizeof(sAddr))) < 0)
-	{
-		FreeRTOS_closesocket(n->my_socket);
-	    goto exit;
-	}
-
-exit:
-	return retVal;
+    // loop through all the results and get the first resolve
+    for (p = servinfo; p != 0; p = p->ai_next)
+    {
+        h = (struct sockaddr_in *)p->ai_addr;
+        in->s_addr = h->sin_addr.s_addr;
+    }
+    freeaddrinfo(servinfo); // all done with this structure
+    return 0;
 }
 
+
+int NetworkConnect(Network* n, char* host, int port)
+{
+	struct sockaddr_in addr;
+	int ret;
+
+	if (host2addr(host, &(addr.sin_addr)) != 0)
+	{
+		return -1;
+	}
+
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+
+	n->my_socket = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if( n->my_socket < 0 )
+	{
+		// error
+		return -1;
+	}
+	ret = connect(n->my_socket, ( struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	if( ret < 0 )
+	{
+		// error
+		close(n->my_socket);
+		return ret;
+	}
+
+	return ret;
+}
 
 #if 0
 int NetworkConnectTLS(Network *n, char* addr, int port, SlSockSecureFiles_t* certificates, unsigned char sec_method, unsigned int cipher, char server_verify)
