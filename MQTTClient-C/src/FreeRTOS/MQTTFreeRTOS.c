@@ -16,12 +16,14 @@
  *******************************************************************************/
 
 #include "MQTTFreeRTOS.h"
-
+#include <string.h>
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 int ThreadStart(Thread* thread, void (*fn)(void*), void* arg)
 {
 	int rc = 0;
-	uint16_t usTaskStackSize = (configMINIMAL_STACK_SIZE * 5);
+	uint16_t usTaskStackSize = (1024);
 	UBaseType_t uxTaskPriority = uxTaskPriorityGet(NULL); /* set the priority as the same as the calling task*/
 
 	rc = xTaskCreate(fn,	/* The function that implements the task. */
@@ -89,17 +91,20 @@ int FreeRTOS_read(Network* n, unsigned char* buffer, int len, int timeout_ms)
 	TickType_t xTicksToWait = timeout_ms / portTICK_PERIOD_MS; /* convert milliseconds to ticks */
 	TimeOut_t xTimeOut;
 	int recvLen = 0;
+        struct timeval tv;
 
 	vTaskSetTimeOutState(&xTimeOut); /* Record the time at which this function was entered. */
 	do
 	{
 		int rc = 0;
 
-		FreeRTOS_setsockopt(n->my_socket, 0, FREERTOS_SO_RCVTIMEO, &xTicksToWait, sizeof(xTicksToWait));
-		rc = FreeRTOS_recv(n->my_socket, buffer + recvLen, len - recvLen, 0);
+                tv.tv_sec = timeout_ms / 1000;
+                tv.tv_usec = (timeout_ms % 1000) * 1000;
+                setsockopt(n->my_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+		rc = recv(n->my_socket, buffer + recvLen, len - recvLen, 0);
 		if (rc > 0)
 			recvLen += rc;
-		else if (rc < 0)
+		else if ( (rc < 0) && (errno != EAGAIN) )
 		{
 			recvLen = rc;
 			break;
@@ -115,17 +120,20 @@ int FreeRTOS_write(Network* n, unsigned char* buffer, int len, int timeout_ms)
 	TickType_t xTicksToWait = timeout_ms / portTICK_PERIOD_MS; /* convert milliseconds to ticks */
 	TimeOut_t xTimeOut;
 	int sentLen = 0;
+        struct timeval tv;
 
 	vTaskSetTimeOutState(&xTimeOut); /* Record the time at which this function was entered. */
 	do
 	{
 		int rc = 0;
 
-		FreeRTOS_setsockopt(n->my_socket, 0, FREERTOS_SO_RCVTIMEO, &xTicksToWait, sizeof(xTicksToWait));
-		rc = FreeRTOS_send(n->my_socket, buffer + sentLen, len - sentLen, 0);
+                tv.tv_sec = timeout_ms / 1000;
+                tv.tv_usec = (timeout_ms % 1000) * 1000;
+		setsockopt(n->my_socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+		rc = send(n->my_socket, buffer + sentLen, len - sentLen, 0);
 		if (rc > 0)
 			sentLen += rc;
-		else if (rc < 0)
+		else if ( (rc < 0) && (errno != EAGAIN))
 		{
 			sentLen = rc;
 			break;
@@ -138,7 +146,7 @@ int FreeRTOS_write(Network* n, unsigned char* buffer, int len, int timeout_ms)
 
 void FreeRTOS_disconnect(Network* n)
 {
-	FreeRTOS_closesocket(n->my_socket);
+	closesocket(n->my_socket);
 }
 
 
@@ -153,22 +161,28 @@ void NetworkInit(Network* n)
 
 int NetworkConnect(Network* n, char* addr, int port)
 {
-	struct freertos_sockaddr sAddr;
+	struct sockaddr_in sAddr;
 	int retVal = -1;
-	uint32_t ipAddress;
+        struct hostent *he;
+        struct timeval tv;
 
-	if ((ipAddress = FreeRTOS_gethostbyname(addr)) == 0)
+        if ((he = gethostbyname(addr)) == NULL)
+                goto exit;
+
+	sAddr.sin_port = htons(port);
+        sAddr.sin_family = AF_INET;
+        memcpy((char *)&sAddr.sin_addr.s_addr, he->h_addr_list[0], he->h_length);
+
+	if ((n->my_socket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
 		goto exit;
 
-	sAddr.sin_port = FreeRTOS_htons(port);
-	sAddr.sin_addr = ipAddress;
+        tv.tv_sec  = 10;
+        tv.tv_usec = 0;
+        setsockopt(n->my_socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-	if ((n->my_socket = FreeRTOS_socket(FREERTOS_AF_INET, FREERTOS_SOCK_STREAM, FREERTOS_IPPROTO_TCP)) < 0)
-		goto exit;
-
-	if ((retVal = FreeRTOS_connect(n->my_socket, &sAddr, sizeof(sAddr))) < 0)
+	if ((retVal = connect(n->my_socket, (struct sockaddr *) &sAddr, sizeof(sAddr))) < 0)
 	{
-		FreeRTOS_closesocket(n->my_socket);
+		closesocket(n->my_socket);
 	    goto exit;
 	}
 
@@ -176,6 +190,11 @@ exit:
 	return retVal;
 }
 
+
+int NetworkDestroy(Network *n)
+{
+  closesocket(n->my_socket);
+}
 
 #if 0
 int NetworkConnectTLS(Network *n, char* addr, int port, SlSockSecureFiles_t* certificates, unsigned char sec_method, unsigned int cipher, char server_verify)

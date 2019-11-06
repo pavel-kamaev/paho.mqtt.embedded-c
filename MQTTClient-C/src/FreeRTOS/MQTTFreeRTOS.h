@@ -18,8 +18,6 @@
 #define MQTTFreeRTOS_H
 
 #include "FreeRTOS.h"
-#include "FreeRTOS_Sockets.h"
-#include "FreeRTOS_IP.h"
 #include "semphr.h"
 #include "task.h"
 
@@ -33,7 +31,7 @@ typedef struct Network Network;
 
 struct Network
 {
-	xSocket_t my_socket;
+	int my_socket;
 	int (*mqttread) (Network*, unsigned char*, int, int);
 	int (*mqttwrite) (Network*, unsigned char*, int, int);
 	void (*disconnect) (Network*);
@@ -67,6 +65,7 @@ void FreeRTOS_disconnect(Network*);
 
 void NetworkInit(Network*);
 int NetworkConnect(Network*, char*, int);
+int NetworkDestroy(Network*);
 /*int NetworkConnectTLS(Network*, char*, int, SlSockSecureFiles_t*, unsigned char, unsigned int, char);*/
 
 #endif
